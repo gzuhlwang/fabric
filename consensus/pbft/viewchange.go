@@ -208,7 +208,7 @@ func (instance *pbftCore) recvViewChange(vc *ViewChange) events.Event {
 	}
 
 	instance.viewChangeStore[vcidx{vc.View, vc.ReplicaId}] = vc
-
+	// Practical Byzantine Fault Tolerance and Proactive Recovery
 	// PBFT TOCS 4.5.1 Liveness: "if a replica receives a set of
 	// f+1 valid VIEW-CHANGE messages from other replicas for
 	// views greater than its current view, it sends a VIEW-CHANGE

@@ -191,7 +191,7 @@ type msgCert struct {
 	sentCommit  bool
 	commit      []*Commit
 }
-
+// view change
 type vcidx struct {
 	v  uint64
 	id uint64
