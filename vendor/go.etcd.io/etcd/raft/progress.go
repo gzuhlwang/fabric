@@ -32,9 +32,13 @@ var prstmap = [...]string{
 
 func (st ProgressStateType) String() string { return prstmap[uint64(st)] }
 
-// Progress represents a follower’s progress in the view of the leader. Leader maintains
+// Progress(进度) represents a follower’s progress in the view of the leader（leader眼里的follower的进度）. Leader maintains
 // progresses of all followers, and sends entries to the follower based on its progress.
 type Progress struct {
+	// Raft paper 5.3 Log replication
+	// '... The leader maintains a nextIndex for each follower, which is the index of the next
+	// log entry the leader will send to that follower. ... Eventually nextIndex will reach a
+	// point where the leader and follower logs match.'
 	Match, Next uint64
 	// State defines how the leader should interact with the follower.
 	//

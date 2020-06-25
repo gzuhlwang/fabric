@@ -353,10 +353,12 @@ func (n *node) run(r *raft) {
 			}
 		case m := <-n.recvc:
 			// filter out response message from unknown From.
+			// pr != nil: exclude unkown From
+			// !IsResponseMsg(m.Type): exclude message of type response
 			if pr := r.getProgress(m.From); pr != nil || !IsResponseMsg(m.Type) {
 				r.Step(m)
 			}
-		case cc := <-n.confc:
+		case cc := <-n.confc: // got a config change
 			if cc.NodeID == None {
 				select {
 				case n.confstatec <- pb.ConfState{
@@ -532,7 +534,7 @@ func (n *node) ApplyConfChange(cc pb.ConfChange) *pb.ConfState {
 	case <-n.done:
 	}
 	select {
-	case cs = <-n.confstatec:
+	case cs = <-n.confstatec: // block
 	case <-n.done:
 	}
 	return &cs
@@ -567,7 +569,7 @@ func (n *node) ReportSnapshot(id uint64, status SnapshotStatus) {
 func (n *node) TransferLeadership(ctx context.Context, lead, transferee uint64) {
 	select {
 	// manually set 'from' and 'to', so that leader can voluntarily transfers its leadership
-	case n.recvc <- pb.Message{Type: pb.MsgTransferLeader, From: transferee, To: lead}:
+	case n.recvc <- pb.Message{Type: pb.MsgTransferLeader, From: transferee, To: lead}: // block
 	case <-n.done:
 	case <-ctx.Done():
 	}

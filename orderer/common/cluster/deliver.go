@@ -85,6 +85,7 @@ func (p *BlockPuller) Close() {
 // from some remote ordering node, or until consecutive failures
 // of fetching the block exceed MaxPullBlockRetries.
 func (p *BlockPuller) PullBlock(seq uint64) *common.Block {
+	// max retry times
 	retriesLeft := p.MaxPullBlockRetries
 	for {
 		block := p.tryFetchBlock(seq)
@@ -117,6 +118,7 @@ func (p *BlockPuller) tryFetchBlock(seq uint64) *common.Block {
 	for p.isDisconnected() {
 		reConnected = true
 		p.connectToSomeEndpoint(seq)
+		// none of endpoints connected, sleep and try util connected
 		if p.isDisconnected() {
 			time.Sleep(p.RetryTimeout)
 		}
@@ -255,7 +257,7 @@ func (p *BlockPuller) connectToSomeEndpoint(minRequestedSequence uint64) {
 		if endpoint == chosenEndpoint {
 			continue
 		}
-		endpointInfo.conn.Close()
+		endpointInfo.conn.Close() // close conn
 	}
 
 	p.conn = endpointsInfo[chosenEndpoint].conn
@@ -268,10 +270,10 @@ func (p *BlockPuller) connectToSomeEndpoint(minRequestedSequence uint64) {
 // probeEndpoints reaches to all endpoints known and returns the latest block sequences
 // of the endpoints, as well as gRPC connections to them.
 func (p *BlockPuller) probeEndpoints(minRequestedSequence uint64) *endpointInfoBucket {
-	endpointsInfo := make(chan *endpointInfo, len(p.Endpoints))
+	endpointsInfo := make(chan *endpointInfo, len(p.Endpoints)) // 缓冲通道用法
 
 	var wg sync.WaitGroup
-	wg.Add(len(p.Endpoints))
+	wg.Add(len(p.Endpoints)) // 同步等待组用法
 
 	var forbiddenErr uint32
 	var unavailableErr uint32
@@ -291,18 +293,18 @@ func (p *BlockPuller) probeEndpoints(minRequestedSequence uint64) *endpointInfoB
 				return
 			}
 			endpointsInfo <- ei
-		}(endpoint)
+		}(endpoint) // 闭包用法
 	}
 	wg.Wait()
 
-	close(endpointsInfo)
+	close(endpointsInfo)  // 关闭通道
 	eib := &endpointInfoBucket{
 		bucket: endpointsInfo,
 		logger: p.Logger,
 	}
 
 	if unavailableErr == 1 && len(endpointsInfo) == 0 {
-		eib.err = ErrServiceUnavailable
+		eib.err = ErrServiceUnavailable // 错误处理
 	}
 	if forbiddenErr == 1 && len(endpointsInfo) == 0 {
 		eib.err = ErrForbidden

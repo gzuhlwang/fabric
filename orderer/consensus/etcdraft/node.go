@@ -119,7 +119,7 @@ func (n *node) run(campaign bool) {
 		}()
 	}
 
-	var notifyLeaderChangeC chan uint64
+	var notifyLeaderChangeC chan uint64 // nil channel
 
 	for {
 		select {
@@ -177,7 +177,7 @@ func (n *node) run(campaign bool) {
 			// to the followers and them writing to their disks. Check 10.2.1 in thesis
 			n.send(rd.Messages)
 
-		case notifyLeaderChangeC = <-n.subscriberC:
+		case notifyLeaderChangeC = <-n.subscriberC: // assign
 
 		case <-n.chain.haltC:
 			raftTicker.Stop()
@@ -241,7 +241,7 @@ func (n *node) abdicateLeader(currentLead uint64) {
 
 	// Leader initiates leader transfer
 	if status.RaftState == raft.StateLeader {
-		var transferee uint64
+		var transferee uint64 // 承袭人
 		for id, pr := range status.Progress {
 			if id == status.ID {
 				continue // skip self
@@ -264,6 +264,7 @@ func (n *node) abdicateLeader(currentLead uint64) {
 		n.TransferLeadership(context.TODO(), status.ID, transferee)
 	}
 
+	// from now on, everything happened on follower
 	timer := n.clock.NewTimer(time.Duration(n.config.ElectionTick) * n.tickInterval)
 	defer timer.Stop() // prevent timer leak
 

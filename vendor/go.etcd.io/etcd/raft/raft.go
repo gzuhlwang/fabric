@@ -262,6 +262,7 @@ type raft struct {
 	maxMsgSize         uint64
 	maxUncommittedSize uint64
 	maxInflight        int
+	// progress for every follower
 	prs                map[uint64]*Progress
 	learnerPrs         map[uint64]*Progress
 	matchBuf           uint64Slice
@@ -1050,7 +1051,9 @@ func stepLeader(r *raft, m pb.Message) error {
 
 		return nil
 	}
-
+	// Notice that if no branch matched above, the program will go here and proceed.
+	// This is subtle. good point!
+	
 	// All other message types require a progress for m.From (pr).
 	pr := r.getProgress(m.From)
 	if pr == nil {
@@ -1402,6 +1405,7 @@ func (r *raft) addLearner(id uint64) {
 func (r *raft) addNodeOrLearnerNode(id uint64, isLearner bool) {
 	pr := r.getProgress(id)
 	if pr == nil {
+		// fresh raft node
 		r.setProgress(id, 0, r.raftLog.lastIndex()+1, isLearner)
 	} else {
 		if isLearner && !pr.IsLearner {
@@ -1427,7 +1431,7 @@ func (r *raft) addNodeOrLearnerNode(id uint64, isLearner bool) {
 	}
 
 	// When a node is first added, we should mark it as recently active.
-	// Otherwise, CheckQuorum may cause us to step down if it is invoked
+	// Otherwise, CheckQuorum may cause us to step down（让位） if it is invoked
 	// before the added node has a chance to communicate with us.
 	pr = r.getProgress(id)
 	pr.RecentActive = true
@@ -1454,12 +1458,14 @@ func (r *raft) removeNode(id uint64) {
 
 func (r *raft) setProgress(id, match, next uint64, isLearner bool) {
 	if !isLearner {
+		// it is a follower node
 		delete(r.learnerPrs, id)
 		r.prs[id] = &Progress{Next: next, Match: match, ins: newInflights(r.maxInflight)}
 		return
 	}
 
 	if _, ok := r.prs[id]; ok {
+		// caution! cannot switch from a voter to learner
 		panic(fmt.Sprintf("%x unexpected changing from voter to learner for %x", r.id, id))
 	}
 	r.learnerPrs[id] = &Progress{Next: next, Match: match, ins: newInflights(r.maxInflight), IsLearner: true}

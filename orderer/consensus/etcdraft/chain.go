@@ -165,7 +165,7 @@ type Chain struct {
 	confChangeInProgress *raftpb.ConfChange
 	justElected          bool // this is true when node has just been elected
 	configInflight       bool // this is true when there is config block or ConfChange in flight
-	blockInflight        int  // number of in flight blocks
+	blockInflight        int  // number of in flight blocks 正在发送的区块数
 
 	clock clock.Clock // Tests can inject a fake clock
 
@@ -387,16 +387,16 @@ func (c *Chain) Configure(env *common.Envelope, configSeq uint64) error {
 }
 
 // WaitReady blocks when the chain:
-// - is catching up with other nodes using snapshot
+// - is catching up with other nodes using snapshot (because catchup will take a long time to finish catchup)
 //
-// In any other case, it returns right away.
+// In any other case(such as, apply entry), it returns right away.
 func (c *Chain) WaitReady() error {
 	if err := c.isRunning(); err != nil {
 		return err
 	}
 
 	select {
-	case c.submitC <- nil:
+	case c.submitC <- nil: // this will block if submitC is unbuffered channel
 	case <-c.doneC:
 		return errors.Errorf("chain is stopped")
 	}
@@ -414,7 +414,7 @@ func (c *Chain) Errored() <-chan struct{} {
 // Halt stops the chain.
 func (c *Chain) Halt() {
 	select {
-	case <-c.startC:
+	case <-c.startC: // recv from a closed channel
 	default:
 		c.logger.Warnf("Attempted to halt a chain that has not started")
 		return
@@ -434,7 +434,7 @@ func (c *Chain) Halt() {
 
 func (c *Chain) isRunning() error {
 	select {
-	case <-c.startC:
+	case <-c.startC: // startC is a closed channel, so here it will not block
 	default:
 		return errors.Errorf("chain is not started")
 	}
@@ -442,7 +442,7 @@ func (c *Chain) isRunning() error {
 	select {
 	case <-c.doneC:
 		return errors.Errorf("chain is stopped")
-	default:
+	default: // pass here
 	}
 
 	return nil
@@ -478,7 +478,7 @@ func (c *Chain) Consensus(req *orderer.ConsensusRequest, sender uint64) error {
 	return nil
 }
 
-// Submit forwards the incoming request to:
+// Submit forwards the incoming request(入站请求) to:
 // - the local run goroutine if this is leader
 // - the actual leader via the transport mechanism
 // The call fails if there's no leader elected yet.
@@ -491,13 +491,13 @@ func (c *Chain) Submit(req *orderer.SubmitRequest, sender uint64) error {
 	leadC := make(chan uint64, 1)
 	select {
 	case c.submitC <- &submit{req, leadC}:
-		lead := <-leadC
-		if lead == raft.None {
+		lead := <-leadC // block in spite of buffered channel due to empty content
+		if lead == raft.None { // no leader
 			c.Metrics.ProposalFailures.Add(1)
 			return errors.Errorf("no Raft leader")
 		}
 
-		if lead != c.raftID {
+		if lead != c.raftID { // current node is not leader node
 			if err := c.rpc.SendSubmit(lead, req); err != nil {
 				c.Metrics.ProposalFailures.Add(1)
 				return err
@@ -554,12 +554,13 @@ func (c *Chain) run() {
 	var cancelProp context.CancelFunc
 	cancelProp = func() {} // no-op as initial value
 
+	// two function variable
 	becomeLeader := func() (chan<- *common.Block, context.CancelFunc) {
 		c.Metrics.IsLeader.Set(1)
 
-		c.blockInflight = 0
+		c.blockInflight = 0 // reset 0 when elected as leader
 		c.justElected = true
-		submitC = nil
+		submitC = nil // just elected, then set nil
 		ch := make(chan *common.Block, c.opts.MaxInflightBlocks)
 
 		// if there is unfinished ConfChange, we should resume the effort to propose it as
@@ -579,6 +580,8 @@ func (c *Chain) run() {
 		// Leader should call Propose in go routine, because this method may be blocked
 		// if node is leaderless (this can happen when leader steps down in a heavily
 		// loaded network). We need to make sure applyC can still be consumed properly.
+
+		// select + context
 		ctx, cancel := context.WithCancel(context.Background())
 		go func(ctx context.Context, ch <-chan *common.Block) {
 			for {
@@ -628,7 +631,7 @@ func (c *Chain) run() {
 			if soft.Lead != c.raftID {
 				continue
 			}
-
+            // so far, this node is leader
 			batches, pending, err := c.ordered(s.req)
 			if err != nil {
 				c.logger.Errorf("Failed to order message: %s", err)
@@ -639,9 +642,9 @@ func (c *Chain) run() {
 			} else {
 				stopTimer()
 			}
-
+            // leader responsible for proposing
 			c.propose(propC, bc, batches...)
-
+			// two cases will reset the submitC.
 			if c.configInflight {
 				c.logger.Info("Received config transaction, pause accepting transaction till it is committed")
 				submitC = nil
@@ -705,7 +708,7 @@ func (c *Chain) run() {
 
 			c.apply(app.entries)
 
-			if c.justElected {
+			if c.justElected { // 刚选举为leader
 				msgInflight := c.Node.lastIndex() > c.appliedIndex
 				if msgInflight {
 					c.logger.Debugf("There are in flight blocks, new leader should not serve requests")
@@ -788,6 +791,7 @@ func (c *Chain) writeBlock(block *common.Block, index uint64) {
 	}
 
 	if c.blockInflight > 0 {
+		// 只在leader节点上减
 		c.blockInflight-- // only reduce on leader
 	}
 	c.lastBlock = block
@@ -800,6 +804,7 @@ func (c *Chain) writeBlock(block *common.Block, index uint64) {
 	}
 
 	c.raftMetadataLock.Lock()
+	// update raft index w.r.t. current block
 	c.opts.BlockMetadata.RaftIndex = index
 	m := protoutil.MarshalOrPanic(c.opts.BlockMetadata)
 	c.raftMetadataLock.Unlock()
@@ -967,6 +972,9 @@ func (c *Chain) apply(ents []raftpb.Entry) {
 	for i := range ents {
 		switch ents[i].Type {
 		case raftpb.EntryNormal:
+			// normal entry may include normal block or config block
+
+			// why?
 			if len(ents[i].Data) == 0 {
 				break
 			}
@@ -1018,6 +1026,7 @@ func (c *Chain) apply(ents []raftpb.Entry) {
 			}
 
 			lead := atomic.LoadUint64(&c.lastKnownLeader)
+			// 移除leader节点且自身就是leader
 			removeLeader := cc.Type == raftpb.ConfChangeRemoveNode && cc.NodeID == lead
 			shouldHalt := cc.Type == raftpb.ConfChangeRemoveNode && cc.NodeID == c.raftID
 
@@ -1043,18 +1052,22 @@ func (c *Chain) apply(ents []raftpb.Entry) {
 		}
 
 		if ents[i].Index > c.appliedIndex {
+			// update appliedIndex
 			c.appliedIndex = ents[i].Index
 		}
 	}
 
 	if c.accDataSize >= c.sizeLimit {
+		// got last block
 		b := protoutil.UnmarshalBlockOrPanic(ents[position].Data)
 
 		select {
+		// take last entry as snapshot whose data is nonempty
 		case c.gcC <- &gc{index: c.appliedIndex, state: c.confState, data: ents[position].Data}:
 			c.logger.Infof("Accumulated %d bytes since last snapshot, exceeding size limit (%d bytes), "+
 				"taking snapshot at block [%d] (index: %d), last snapshotted block number is %d, current nodes: %+v",
 				c.accDataSize, c.sizeLimit, b.Header.Number, c.appliedIndex, c.lastSnapBlockNum, c.confState.Nodes)
+			// reset zero
 			c.accDataSize = 0
 			c.lastSnapBlockNum = b.Header.Number
 			c.Metrics.SnapshotBlockNumber.Set(float64(b.Header.Number))
